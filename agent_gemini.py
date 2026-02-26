@@ -28,40 +28,34 @@ client  = genai.Client(api_key=API_KEY)
 # ─────────────────────────────────────────
 # MODELS - DUAL STRATEGY
 # ─────────────────────────────────────────
-MODEL_FAST  = "gemini-2.0-flash"  # fast, generous free tier
-MODEL_SMART = "gemini-2.5-pro"    # most capable
+MODEL_FAST  = "gemini-2.0-flash"
+MODEL_SMART = "gemini-2.5-pro"
 
 _smart_calls_today = 0
 _smart_calls_date  = date.today()
-_MAX_SMART_CALLS   = 100  # AI Studio free tier safety buffer
+_MAX_SMART_CALLS   = 100
 
 
 def choose_model(user_message: str) -> str:
-    """Automatically selects model based on task complexity."""
     global _smart_calls_today, _smart_calls_date
     if date.today() != _smart_calls_date:
         _smart_calls_today = 0
         _smart_calls_date  = date.today()
-
-    msg_lower = user_message.lower()
-    simple_keywords  = ["open","click","type","screenshot","save","read","scroll",
-                        "wait","close","show","list","go to","navigate","press"]
-    complex_keywords = ["analyz","compare","strategy","plan","summarize","summary",
-                        "report","conclusions","optimize","explain","why","create",
-                        "design","budget","calculate","step by step","following",
-                        "perform","excel","spreadsheet","html","table","chart","graph"]
-
-    is_simple  = any(kw in msg_lower for kw in simple_keywords)
-    is_complex = any(kw in msg_lower for kw in complex_keywords) or len(user_message) > 200
-
+    msg = user_message.lower()
+    simple  = ["open","click","type","screenshot","save","read","scroll",
+               "wait","close","show","list","go to","navigate","press"]
+    complex_ = ["analyz","compare","strategy","plan","summarize","summary",
+                "report","optimize","explain","create","design","budget",
+                "calculate","step by step","excel","spreadsheet","html",
+                "table","chart","graph","following","perform"]
+    is_simple  = any(k in msg for k in simple)
+    is_complex = any(k in msg for k in complex_) or len(user_message) > 200
     if is_complex and _smart_calls_today < _MAX_SMART_CALLS:
-        _smart_calls_today += 1
-        return MODEL_SMART
-    elif is_simple and not is_complex:
+        _smart_calls_today += 1; return MODEL_SMART
+    if is_simple and not is_complex:
         return MODEL_FAST
-    elif _smart_calls_today < _MAX_SMART_CALLS:
-        _smart_calls_today += 1
-        return MODEL_SMART
+    if _smart_calls_today < _MAX_SMART_CALLS:
+        _smart_calls_today += 1; return MODEL_SMART
     return MODEL_FAST
 
 
@@ -76,7 +70,7 @@ except ImportError:
     print("[⚠️  Playwright not available. Run: pip install playwright && playwright install chromium]")
 
 # ─────────────────────────────────────────
-# OPENPYXL (EXCEL)
+# OPENPYXL
 # ─────────────────────────────────────────
 try:
     import openpyxl
@@ -89,24 +83,18 @@ except ImportError:
     print("[⚠️  openpyxl not available. Run: pip install openpyxl]")
 
 # ─────────────────────────────────────────
-# CONFIGURATION
+# CONFIG
 # ─────────────────────────────────────────
 DESKTOP = os.path.join(os.path.expanduser("~"), "Desktop")
-
-_playwright = None
-_browser    = None
-_page       = None
+_playwright = _browser = _page = None
 
 
-def fix_path(path: str) -> str:
-    return (path
-            .replace("~/Desktop", DESKTOP)
-            .replace("/desktop",  DESKTOP)
-            .replace("~/desktop", DESKTOP))
+def fix_path(p: str) -> str:
+    return p.replace("~/Desktop", DESKTOP).replace("/desktop", DESKTOP).replace("~/desktop", DESKTOP)
 
 
 # ─────────────────────────────────────────
-# BROWSER
+# BROWSER HELPERS
 # ─────────────────────────────────────────
 def get_page():
     global _playwright, _browser, _page
@@ -120,29 +108,99 @@ def get_page():
 
 def close_browser():
     global _playwright, _browser, _page
-    if _browser:
-        try: _browser.close()
-        except: pass
-    if _playwright:
-        try: _playwright.stop()
-        except: pass
+    for obj, method in [(_browser, "close"), (_playwright, "stop")]:
+        if obj:
+            try: getattr(obj, method)()
+            except: pass
     _page = _browser = _playwright = None
 
 
-def browser_goto(url: str) -> str:
-    """Navigate to a URL in the Chromium browser."""
+# ─────────────────────────────────────────
+# TOOL IMPLEMENTATIONS
+# ─────────────────────────────────────────
+
+def _read_file(path):
+    path = fix_path(path)
+    try:
+        with open(path, "r", encoding="utf-8") as f: c = f.read()
+        return (c[:10000] + "\n[truncated]") if len(c) > 10000 else c
+    except UnicodeDecodeError:
+        try:
+            with open(path, "r", encoding="cp1250") as f: return f.read()[:10000]
+        except Exception as e: return f"Read error: {e}"
+    except Exception as e: return f"Read error: {e}"
+
+def _write_file(path, content):
+    path = fix_path(path)
+    try:
+        d = os.path.dirname(path)
+        if d: os.makedirs(d, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f: f.write(content)
+        return f"Saved: {path} ({len(content)} chars)"
+    except Exception as e: return f"Write error: {e}"
+
+def _list_files(directory="."):
+    directory = fix_path(directory)
+    try:
+        result = []
+        for e in sorted(os.listdir(directory)):
+            full = os.path.join(directory, e)
+            if os.path.isdir(full):
+                result.append(f"📁 {e}/")
+            else:
+                s = os.path.getsize(full)
+                sz = f"{s} B" if s < 1024 else (f"{s/1024:.1f} KB" if s < 1024**2 else f"{s/1024/1024:.1f} MB")
+                result.append(f"📄 {e} ({sz})")
+        return "\n".join(result) or "Empty."
+    except Exception as e: return f"List error: {e}"
+
+def _open_file(path):
+    path = fix_path(path)
+    try: os.startfile(path); return f"Opened: {path}"
+    except Exception as e: return f"Open error: {e}"
+
+def _delete_file(path):
+    path = fix_path(path)
+    try:
+        if os.path.isfile(path): os.remove(path); return f"Deleted: {path}"
+        elif os.path.isdir(path):
+            import shutil; shutil.rmtree(path); return f"Deleted folder: {path}"
+        return f"Not found: {path}"
+    except Exception as e: return f"Delete error: {e}"
+
+def _copy_file(src, dst):
+    src, dst = fix_path(src), fix_path(dst)
+    try:
+        import shutil
+        d = os.path.dirname(dst)
+        if d: os.makedirs(d, exist_ok=True)
+        shutil.copy2(src, dst); return f"Copied: {src} -> {dst}"
+    except Exception as e: return f"Copy error: {e}"
+
+def _move_file(src, dst):
+    src, dst = fix_path(src), fix_path(dst)
+    try:
+        import shutil
+        d = os.path.dirname(dst)
+        if d: os.makedirs(d, exist_ok=True)
+        shutil.move(src, dst); return f"Moved: {src} -> {dst}"
+    except Exception as e: return f"Move error: {e}"
+
+def _create_directory(path):
+    path = fix_path(path)
+    try: os.makedirs(path, exist_ok=True); return f"Created: {path}"
+    except Exception as e: return f"mkdir error: {e}"
+
+def _browser_goto(url):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         if not url.startswith("http"): url = "https://" + url
         page = get_page()
         page.goto(url, wait_until="domcontentloaded", timeout=20000)
         return f"Opened: {url} | Title: {page.title()}"
-    except Exception as e:
-        return f"Navigation error: {e}"
+    except Exception as e: return f"Navigation error: {e}"
 
-
-def browser_click(selector: str) -> str:
-    """Click an element on the page by visible text or CSS selector."""
+def _browser_click(selector):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         page = get_page(); clicked = False
@@ -157,12 +215,9 @@ def browser_click(selector: str) -> str:
         if not clicked: return f"Element not found: {selector}"
         page.wait_for_load_state("domcontentloaded")
         return f"Clicked: {selector}"
-    except Exception as e:
-        return f"Click error: {e}"
+    except Exception as e: return f"Click error: {e}"
 
-
-def browser_type(selector: str, text: str) -> str:
-    """Type text into a form field identified by placeholder, label, or CSS selector."""
+def _browser_type(selector, text):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         page = get_page(); filled = False
@@ -177,22 +232,16 @@ def browser_type(selector: str, text: str) -> str:
             except: pass
         if not filled: return f"Field not found: {selector}"
         return f"Typed '{text}' into: {selector}"
-    except Exception as e:
-        return f"Type error: {e}"
+    except Exception as e: return f"Type error: {e}"
 
-
-def browser_get_text() -> str:
-    """Get all visible text from the current page (max 6000 chars)."""
+def _browser_get_text():
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         text = get_page().inner_text("body")
-        return (text[:6000] + "\n[... truncated]") if len(text) > 6000 else text
-    except Exception as e:
-        return f"Get text error: {e}"
+        return (text[:6000] + "\n[truncated]") if len(text) > 6000 else text
+    except Exception as e: return f"Get text error: {e}"
 
-
-def browser_screenshot(path: str) -> str:
-    """Take a full-page screenshot and save as PNG."""
+def _browser_screenshot(path):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     path = fix_path(path)
     if not path.endswith(".png"): path += ".png"
@@ -201,245 +250,95 @@ def browser_screenshot(path: str) -> str:
         if d: os.makedirs(d, exist_ok=True)
         get_page().screenshot(path=path, full_page=True)
         return f"Screenshot saved: {path}"
-    except Exception as e:
-        return f"Screenshot error: {e}"
+    except Exception as e: return f"Screenshot error: {e}"
 
-
-def browser_get_links() -> str:
-    """Return a list of all links on the current page (max 40)."""
+def _browser_get_links():
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         links = get_page().eval_on_selector_all(
-            "a[href]",
-            "els => els.map(e=>({text:e.innerText.trim(),href:e.href})).filter(l=>l.text&&l.href)")
+            "a[href]", "els=>els.map(e=>({text:e.innerText.trim(),href:e.href})).filter(l=>l.text&&l.href)")
         return "\n".join(f"{l['text'][:60]} -> {l['href']}" for l in links[:40]) or "No links."
-    except Exception as e:
-        return f"Get links error: {e}"
+    except Exception as e: return f"Get links error: {e}"
 
-
-def browser_scroll(direction: str) -> str:
-    """Scroll the page: up, down, top, or bottom."""
+def _browser_scroll(direction):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
-        get_page().keyboard.press(
-            {"down":"PageDown","up":"PageUp","top":"Home","bottom":"End"}.get(direction,"PageDown"))
+        get_page().keyboard.press({"down":"PageDown","up":"PageUp","top":"Home","bottom":"End"}.get(direction,"PageDown"))
         time.sleep(0.3); return f"Scrolled: {direction}"
-    except Exception as e:
-        return f"Scroll error: {e}"
+    except Exception as e: return f"Scroll error: {e}"
 
-
-def browser_press_key(key: str) -> str:
-    """Press a keyboard key: Enter, Tab, Escape, ArrowDown, etc."""
+def _browser_press_key(key):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         get_page().keyboard.press(key); time.sleep(0.5); return f"Pressed: {key}"
-    except Exception as e:
-        return f"Key press error: {e}"
+    except Exception as e: return f"Key error: {e}"
 
-
-def browser_select_option(selector: str, value: str) -> str:
-    """Select an option from a dropdown by label or value."""
+def _browser_select_option(selector, value):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         page = get_page()
         try: page.select_option(selector, label=value, timeout=5000)
         except: page.select_option(selector, value=value, timeout=5000)
         return f"Selected '{value}' in: {selector}"
-    except Exception as e:
-        return f"Select error: {e}"
+    except Exception as e: return f"Select error: {e}"
 
+def _browser_wait(seconds):
+    try: time.sleep(min(float(seconds), 30)); return f"Waited {seconds}s"
+    except Exception as e: return f"Wait error: {e}"
 
-def browser_wait(seconds: float) -> str:
-    """Wait a given number of seconds (max 30)."""
-    try:
-        time.sleep(min(float(seconds), 30)); return f"Waited {seconds}s"
-    except Exception as e:
-        return f"Wait error: {e}"
-
-
-def browser_current_url() -> str:
-    """Return the current URL and page title."""
+def _browser_current_url():
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
-    try:
-        p = get_page(); return f"URL: {p.url} | Title: {p.title()}"
-    except Exception as e:
-        return f"URL error: {e}"
+    try: p = get_page(); return f"URL: {p.url} | Title: {p.title()}"
+    except Exception as e: return f"URL error: {e}"
 
-
-def browser_go_back() -> str:
-    """Go back to the previous page in the browser."""
+def _browser_go_back():
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
         get_page().go_back(wait_until="domcontentloaded", timeout=10000)
         return f"Went back. URL: {get_page().url}"
-    except Exception as e:
-        return f"Go back error: {e}"
+    except Exception as e: return f"Go back error: {e}"
 
-
-def browser_eval_js(script: str) -> str:
-    """Execute JavaScript on the page and return the result."""
+def _browser_eval_js(script):
     if not PLAYWRIGHT_AVAILABLE: return "Playwright not available."
     try:
-        result = get_page().evaluate(script)
-        return str(result)[:3000] if result else "OK (no result)"
-    except Exception as e:
-        return f"JS error: {e}"
+        r = get_page().evaluate(script)
+        return str(r)[:3000] if r else "OK (no result)"
+    except Exception as e: return f"JS error: {e}"
 
-
-# ─────────────────────────────────────────
-# WEB FETCH (without browser)
-# ─────────────────────────────────────────
 class TextExtractor(HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.text = []; self.skip = False
-
+    def __init__(self): super().__init__(); self.text = []; self.skip = False
     def handle_starttag(self, tag, attrs):
         if tag in ("script","style","nav","footer","head","noscript"): self.skip = True
-
     def handle_endtag(self, tag):
         if tag in ("script","style","nav","footer","head","noscript"): self.skip = False
-
     def handle_data(self, data):
         if not self.skip:
             s = data.strip()
             if s: self.text.append(s)
 
-
-def read_webpage(url: str) -> str:
-    """Fast HTTP page text fetch without a browser (max 8000 chars)."""
+def _read_webpage(url):
     try:
         if not url.startswith("http"): url = "https://" + url
         req = urllib.request.Request(url, headers={"User-Agent":"Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=15) as r:
             html = r.read().decode("utf-8", errors="ignore")
-        parser = TextExtractor(); parser.feed(html)
-        text = "\n".join(parser.text)
-        return (text[:8000] + "\n[... truncated]") if len(text) > 8000 else text or "No content."
-    except Exception as e:
-        return f"Fetch error: {e}"
+        p = TextExtractor(); p.feed(html); text = "\n".join(p.text)
+        return (text[:8000] + "\n[truncated]") if len(text) > 8000 else text or "No content."
+    except Exception as e: return f"Fetch error: {e}"
 
-
-# ─────────────────────────────────────────
-# FILES
-# ─────────────────────────────────────────
-def read_file(path: str) -> str:
-    """Read the contents of a text file."""
-    path = fix_path(path)
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return (content[:10000] + "\n[... truncated]") if len(content) > 10000 else content
-    except UnicodeDecodeError:
-        try:
-            with open(path, "r", encoding="cp1250") as f: return f.read()[:10000]
-        except Exception as e: return f"Read error (encoding): {e}"
-    except Exception as e:
-        return f"Read error: {e}"
-
-
-def write_file(path: str, content: str) -> str:
-    """Write text to a file. Creates parent directories if needed."""
-    path = fix_path(path)
-    try:
-        d = os.path.dirname(path)
-        if d: os.makedirs(d, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f: f.write(content)
-        return f"Saved: {path} ({len(content)} chars)"
-    except Exception as e:
-        return f"Write error: {e}"
-
-
-def list_files(directory: str = ".") -> str:
-    """List files and folders in a directory with sizes."""
-    directory = fix_path(directory)
-    try:
-        result = []
-        for entry in sorted(os.listdir(directory)):
-            full = os.path.join(directory, entry)
-            if os.path.isdir(full):
-                result.append(f"📁 {entry}/")
-            else:
-                size = os.path.getsize(full)
-                s = f"{size} B" if size < 1024 else (f"{size/1024:.1f} KB" if size < 1024**2 else f"{size/1024/1024:.1f} MB")
-                result.append(f"📄 {entry} ({s})")
-        return "\n".join(result) if result else "Directory is empty."
-    except Exception as e:
-        return f"List error: {e}"
-
-
-def open_file(path: str) -> str:
-    """Open a file in its default Windows application."""
-    path = fix_path(path)
-    try:
-        os.startfile(path); return f"Opened: {path}"
-    except Exception as e:
-        return f"Open error: {e}"
-
-
-def delete_file(path: str) -> str:
-    """Delete a file or folder."""
-    path = fix_path(path)
-    try:
-        if os.path.isfile(path):
-            os.remove(path); return f"Deleted file: {path}"
-        elif os.path.isdir(path):
-            import shutil; shutil.rmtree(path); return f"Deleted folder: {path}"
-        return f"Not found: {path}"
-    except Exception as e:
-        return f"Delete error: {e}"
-
-
-def copy_file(src: str, dst: str) -> str:
-    """Copy a file to a new location."""
-    src, dst = fix_path(src), fix_path(dst)
-    try:
-        import shutil
-        d = os.path.dirname(dst)
-        if d: os.makedirs(d, exist_ok=True)
-        shutil.copy2(src, dst); return f"Copied: {src} -> {dst}"
-    except Exception as e:
-        return f"Copy error: {e}"
-
-
-def move_file(src: str, dst: str) -> str:
-    """Move or rename a file."""
-    src, dst = fix_path(src), fix_path(dst)
-    try:
-        import shutil
-        d = os.path.dirname(dst)
-        if d: os.makedirs(d, exist_ok=True)
-        shutil.move(src, dst); return f"Moved: {src} -> {dst}"
-    except Exception as e:
-        return f"Move error: {e}"
-
-
-def create_directory(path: str) -> str:
-    """Create a folder recursively."""
-    path = fix_path(path)
-    try:
-        os.makedirs(path, exist_ok=True); return f"Created folder: {path}"
-    except Exception as e:
-        return f"mkdir error: {e}"
-
-
-# ─────────────────────────────────────────
-# EXCEL
-# ─────────────────────────────────────────
 def _thin_border():
     t = Side(style="thin")
     return Border(left=t, right=t, top=t, bottom=t)
 
-
-def _create_excel_impl(path: str, sheets_data: list) -> str:
+def _create_excel(path, sheets_data):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     if not path.endswith(".xlsx"): path += ".xlsx"
     try:
         wb = Workbook(); wb.remove(wb.active)
         for sd in sheets_data:
-            ws = wb.create_sheet(title=sd.get("name", "Sheet1"))
-            headers = sd.get("headers", []); rows = sd.get("rows", [])
+            ws = wb.create_sheet(title=sd.get("name","Sheet1"))
+            headers = sd.get("headers",[]); rows = sd.get("rows",[])
             if headers:
                 ws.append(headers)
                 for cell in ws[1]:
@@ -452,9 +351,9 @@ def _create_excel_impl(path: str, sheets_data: list) -> str:
                 for cell in ws[ws.max_row]:
                     cell.border = _thin_border()
                     cell.alignment = Alignment(vertical="center")
-            col_widths = sd.get("col_widths", [])
-            if col_widths:
-                for i, w in enumerate(col_widths):
+            cw = sd.get("col_widths",[])
+            if cw:
+                for i, w in enumerate(cw):
                     ws.column_dimensions[openpyxl.utils.get_column_letter(i+1)].width = w
             else:
                 for col in ws.columns:
@@ -463,12 +362,9 @@ def _create_excel_impl(path: str, sheets_data: list) -> str:
         d = os.path.dirname(path)
         if d: os.makedirs(d, exist_ok=True)
         wb.save(path); return f"Excel '{path}' created ({len(sheets_data)} sheet(s))."
-    except Exception as e:
-        return f"Excel create error: {e}"
+    except Exception as e: return f"Excel create error: {e}"
 
-
-def read_excel(path: str) -> str:
-    """Read the contents of an Excel file (max 100 rows per sheet)."""
+def _read_excel(path):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
@@ -480,40 +376,30 @@ def read_excel(path: str) -> str:
                 if any(c is not None for c in row):
                     result.append("\t".join(str(c) if c is not None else "" for c in row))
                     n += 1
-                    if n > 100: result.append("[... truncated]"); break
-        return "\n".join(result) or "File is empty."
-    except Exception as e:
-        return f"Excel read error: {e}"
+                    if n > 100: result.append("[truncated]"); break
+        return "\n".join(result) or "Empty."
+    except Exception as e: return f"Excel read error: {e}"
 
-
-def edit_excel_cell(path: str, sheet_name: str, cell: str, value: str) -> str:
-    """Edit the value of a single cell in an Excel file."""
+def _edit_excel_cell(path, sheet_name, cell, value):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
         wb = load_workbook(path); ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
         try:
             v = float(value); value = int(v) if v == int(v) else v
-        except (ValueError, TypeError): pass
+        except: pass
         ws[cell] = value; wb.save(path); return f"Cell {sheet_name}!{cell} = {value}"
-    except Exception as e:
-        return f"Cell edit error: {e}"
+    except Exception as e: return f"Cell edit error: {e}"
 
-
-def add_excel_formula(path: str, sheet_name: str, cell: str, formula: str) -> str:
-    """Insert an Excel formula like =SUM(), =VLOOKUP(), =COUNTIF(), =IF(), =AVERAGE(), =MAX(), =MIN()."""
+def _add_excel_formula(path, sheet_name, cell, formula):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
         wb = load_workbook(path); ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.active
         ws[cell] = formula; wb.save(path); return f"Formula '{formula}' set in {sheet_name}!{cell}"
-    except Exception as e:
-        return f"Formula error: {e}"
+    except Exception as e: return f"Formula error: {e}"
 
-
-def add_excel_chart(path: str, sheet_name: str, chart_type: str,
-                    data_range: str, title: str, position: str) -> str:
-    """Add a chart (bar, line, or pie) to an Excel sheet."""
+def _add_excel_chart(path, sheet_name, chart_type, data_range, title, position):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
@@ -522,24 +408,19 @@ def add_excel_chart(path: str, sheet_name: str, chart_type: str,
         chart = {"bar": BarChart, "line": LineChart, "pie": PieChart}.get(chart_type, BarChart)()
         chart.title = title; chart.style = 10; chart.width = 18; chart.height = 12
         chart.add_data(ref, titles_from_data=True); ws.add_chart(chart, position)
-        wb.save(path); return f"Chart '{chart_type}' '{title}' added at {position}."
-    except Exception as e:
-        return f"Chart error: {e}"
+        wb.save(path); return f"Chart '{chart_type}' added at {position}."
+    except Exception as e: return f"Chart error: {e}"
 
-
-def add_excel_sheet(path: str, sheet_name: str) -> str:
-    """Add a new sheet to an existing Excel file."""
+def _add_excel_sheet(path, sheet_name):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
         wb = load_workbook(path)
         if sheet_name not in wb.sheetnames: wb.create_sheet(sheet_name)
         wb.save(path); return f"Sheet '{sheet_name}' added."
-    except Exception as e:
-        return f"Add sheet error: {e}"
+    except Exception as e: return f"Add sheet error: {e}"
 
-
-def _excel_add_rows_impl(path: str, sheet_name: str, rows: list) -> str:
+def _excel_add_rows(path, sheet_name, rows):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
@@ -548,13 +429,9 @@ def _excel_add_rows_impl(path: str, sheet_name: str, rows: list) -> str:
             ws.append(row)
             for cell in ws[ws.max_row]: cell.border = _thin_border()
         wb.save(path); return f"Added {len(rows)} row(s) to '{sheet_name}'."
-    except Exception as e:
-        return f"Add rows error: {e}"
+    except Exception as e: return f"Add rows error: {e}"
 
-
-def excel_style_range(path: str, sheet_name: str, cell_range: str,
-                      bold: bool = False, bg_color: str = None, font_size: int = None) -> str:
-    """Style a range of cells with bold, background color, or font size."""
+def _excel_style_range(path, sheet_name, cell_range, bold=False, bg_color=None, font_size=None):
     if not EXCEL_AVAILABLE: return "openpyxl not available."
     path = fix_path(path)
     try:
@@ -565,71 +442,57 @@ def excel_style_range(path: str, sheet_name: str, cell_range: str,
                 if bold or font_size: cell.font = Font(bold=bold, size=font_size or cell.font.size)
                 if bg_color: cell.fill = PatternFill("solid", fgColor=bg_color)
         wb.save(path); return f"Style applied to {cell_range}."
-    except Exception as e:
-        return f"Style error: {e}"
+    except Exception as e: return f"Style error: {e}"
 
-
-# ─────────────────────────────────────────
-# SYSTEM COMMANDS
-# ─────────────────────────────────────────
-def run_command(command: str) -> str:
-    """Run a CMD or PowerShell command and return the output."""
+def _run_command(command):
     try:
         import subprocess
-        result = subprocess.run(command, shell=True, capture_output=True, text=True,
-                                timeout=30, encoding="utf-8", errors="ignore")
-        output = result.stdout + result.stderr
-        return (output[:5000] + "\n[... truncated]") if len(output) > 5000 else output or "Command executed (no output)."
-    except subprocess.TimeoutExpired:
-        return "Timeout — command took too long."
-    except Exception as e:
-        return f"Command error: {e}"
+        r = subprocess.run(command, shell=True, capture_output=True, text=True,
+                           timeout=30, encoding="utf-8", errors="ignore")
+        out = r.stdout + r.stderr
+        return (out[:5000] + "\n[truncated]") if len(out) > 5000 else out or "Done (no output)."
+    except subprocess.TimeoutExpired: return "Timeout."
+    except Exception as e: return f"Command error: {e}"
 
 
 # ─────────────────────────────────────────
 # TOOL DISPATCHER
-# Maps tool name → Python function
 # ─────────────────────────────────────────
 TOOL_MAP = {
-    # files
-    "read_file":             lambda a: read_file(a["path"]),
-    "write_file":            lambda a: write_file(a["path"], a["content"]),
-    "list_files":            lambda a: list_files(a.get("directory", ".")),
-    "open_file":             lambda a: open_file(a["path"]),
-    "delete_file":           lambda a: delete_file(a["path"]),
-    "copy_file":             lambda a: copy_file(a["src"], a["dst"]),
-    "move_file":             lambda a: move_file(a["src"], a["dst"]),
-    "create_directory":      lambda a: create_directory(a["path"]),
-    # browser
-    "browser_goto":          lambda a: browser_goto(a["url"]),
-    "browser_click":         lambda a: browser_click(a["selector"]),
-    "browser_type":          lambda a: browser_type(a["selector"], a["text"]),
-    "browser_get_text":      lambda a: browser_get_text(),
-    "browser_screenshot":    lambda a: browser_screenshot(a["path"]),
-    "browser_get_links":     lambda a: browser_get_links(),
-    "browser_scroll":        lambda a: browser_scroll(a["direction"]),
-    "browser_press_key":     lambda a: browser_press_key(a["key"]),
-    "browser_select_option": lambda a: browser_select_option(a["selector"], a["value"]),
-    "browser_wait":          lambda a: browser_wait(a["seconds"]),
-    "browser_current_url":   lambda a: browser_current_url(),
-    "browser_go_back":       lambda a: browser_go_back(),
-    "browser_eval_js":       lambda a: browser_eval_js(a["script"]),
-    # web
-    "read_webpage":          lambda a: read_webpage(a["url"]),
-    # excel
-    "create_excel":          lambda a: _create_excel_impl(a["path"], a["sheets_data"]),
-    "read_excel":            lambda a: read_excel(a["path"]),
-    "edit_excel_cell":       lambda a: edit_excel_cell(a["path"], a["sheet_name"], a["cell"], a["value"]),
-    "add_excel_formula":     lambda a: add_excel_formula(a["path"], a["sheet_name"], a["cell"], a["formula"]),
-    "add_excel_chart":       lambda a: add_excel_chart(a["path"], a["sheet_name"], a["chart_type"],
-                                                        a["data_range"], a["title"], a["position"]),
-    "add_excel_sheet":       lambda a: add_excel_sheet(a["path"], a["sheet_name"]),
-    "excel_add_rows":        lambda a: _excel_add_rows_impl(a["path"], a["sheet_name"], a["rows"]),
-    "excel_style_range":     lambda a: excel_style_range(a["path"], a["sheet_name"], a["cell_range"],
-                                                          a.get("bold", False), a.get("bg_color"),
-                                                          a.get("font_size")),
-    # system
-    "run_command":           lambda a: run_command(a["command"]),
+    "read_file":             lambda a: _read_file(a["path"]),
+    "write_file":            lambda a: _write_file(a["path"], a["content"]),
+    "list_files":            lambda a: _list_files(a.get("directory",".")),
+    "open_file":             lambda a: _open_file(a["path"]),
+    "delete_file":           lambda a: _delete_file(a["path"]),
+    "copy_file":             lambda a: _copy_file(a["src"], a["dst"]),
+    "move_file":             lambda a: _move_file(a["src"], a["dst"]),
+    "create_directory":      lambda a: _create_directory(a["path"]),
+    "browser_goto":          lambda a: _browser_goto(a["url"]),
+    "browser_click":         lambda a: _browser_click(a["selector"]),
+    "browser_type":          lambda a: _browser_type(a["selector"], a["text"]),
+    "browser_get_text":      lambda a: _browser_get_text(),
+    "browser_screenshot":    lambda a: _browser_screenshot(a["path"]),
+    "browser_get_links":     lambda a: _browser_get_links(),
+    "browser_scroll":        lambda a: _browser_scroll(a["direction"]),
+    "browser_press_key":     lambda a: _browser_press_key(a["key"]),
+    "browser_select_option": lambda a: _browser_select_option(a["selector"], a["value"]),
+    "browser_wait":          lambda a: _browser_wait(a["seconds"]),
+    "browser_current_url":   lambda a: _browser_current_url(),
+    "browser_go_back":       lambda a: _browser_go_back(),
+    "browser_eval_js":       lambda a: _browser_eval_js(a["script"]),
+    "read_webpage":          lambda a: _read_webpage(a["url"]),
+    "create_excel":          lambda a: _create_excel(a["path"], a["sheets_data"]),
+    "read_excel":            lambda a: _read_excel(a["path"]),
+    "edit_excel_cell":       lambda a: _edit_excel_cell(a["path"], a["sheet_name"], a["cell"], a["value"]),
+    "add_excel_formula":     lambda a: _add_excel_formula(a["path"], a["sheet_name"], a["cell"], a["formula"]),
+    "add_excel_chart":       lambda a: _add_excel_chart(a["path"], a["sheet_name"], a["chart_type"],
+                                                         a["data_range"], a["title"], a["position"]),
+    "add_excel_sheet":       lambda a: _add_excel_sheet(a["path"], a["sheet_name"]),
+    "excel_add_rows":        lambda a: _excel_add_rows(a["path"], a["sheet_name"], a["rows"]),
+    "excel_style_range":     lambda a: _excel_style_range(a["path"], a["sheet_name"], a["cell_range"],
+                                                           a.get("bold", False), a.get("bg_color"),
+                                                           a.get("font_size")),
+    "run_command":           lambda a: _run_command(a["command"]),
 }
 
 
@@ -642,109 +505,192 @@ def handle_tool_call(name: str, args: dict) -> str:
 
 # ─────────────────────────────────────────
 # GEMINI TOOL DECLARATIONS
-#
-# Simple tools  → pass Python function directly
-#   (SDK infers schema from docstring + type hints)
-#
-# Complex tools → use types.FunctionDeclaration
-#   with explicit Schema for nested list params
-#   (fixes INVALID_ARGUMENT for list-of-objects / list-of-lists)
+# ALL tools as explicit FunctionDeclaration.
+# google-genai types.Tool only accepts
+# FunctionDeclaration objects — NOT raw Python functions.
 # ─────────────────────────────────────────
+T  = types.Type
+S  = types.Schema
+FD = types.FunctionDeclaration
 
-# ── Schema helpers ──────────────────────
-S = types.Schema
+def _s(t, desc="", **kw): return S(type=t, description=desc, **kw)
 
-def _prop(**kwargs): return S(**kwargs)
+TOOL_DECLARATIONS = [
+    # ── FILES ────────────────────────────────────────────────────────────
+    FD(name="read_file", description="Read the contents of a text file.",
+       parameters=S(type=T.OBJECT, properties={"path": _s(T.STRING,"Path to the file")}, required=["path"])),
 
-# ── Simple tools (auto-schema from Python functions) ──
-SIMPLE_TOOLS = [
-    read_file, write_file, list_files, open_file, delete_file,
-    copy_file, move_file, create_directory,
-    browser_goto, browser_click, browser_type, browser_get_text,
-    browser_screenshot, browser_get_links, browser_scroll,
-    browser_press_key, browser_select_option, browser_wait,
-    browser_current_url, browser_go_back, browser_eval_js,
-    read_webpage,
-    read_excel, edit_excel_cell, add_excel_formula,
-    add_excel_chart, add_excel_sheet, excel_style_range,
-    run_command,
+    FD(name="write_file", description="Write text to a file. Creates parent directories if needed.",
+       parameters=S(type=T.OBJECT, properties={
+           "path":    _s(T.STRING, "Destination path"),
+           "content": _s(T.STRING, "Text content to write"),
+       }, required=["path","content"])),
+
+    FD(name="list_files", description="List files and folders in a directory with sizes.",
+       parameters=S(type=T.OBJECT, properties={
+           "directory": _s(T.STRING, "Path to directory (default: current)"),
+       })),
+
+    FD(name="open_file", description="Open a file in its default Windows application.",
+       parameters=S(type=T.OBJECT, properties={"path": _s(T.STRING)}, required=["path"])),
+
+    FD(name="delete_file", description="Delete a file or folder.",
+       parameters=S(type=T.OBJECT, properties={"path": _s(T.STRING)}, required=["path"])),
+
+    FD(name="copy_file", description="Copy a file to a new location.",
+       parameters=S(type=T.OBJECT, properties={
+           "src": _s(T.STRING,"Source path"), "dst": _s(T.STRING,"Destination path"),
+       }, required=["src","dst"])),
+
+    FD(name="move_file", description="Move or rename a file.",
+       parameters=S(type=T.OBJECT, properties={
+           "src": _s(T.STRING), "dst": _s(T.STRING),
+       }, required=["src","dst"])),
+
+    FD(name="create_directory", description="Create a folder recursively.",
+       parameters=S(type=T.OBJECT, properties={"path": _s(T.STRING)}, required=["path"])),
+
+    # ── BROWSER ──────────────────────────────────────────────────────────
+    FD(name="browser_goto", description="Navigate to a URL in the Chromium browser.",
+       parameters=S(type=T.OBJECT, properties={"url": _s(T.STRING)}, required=["url"])),
+
+    FD(name="browser_click", description="Click an element by visible text or CSS selector.",
+       parameters=S(type=T.OBJECT, properties={"selector": _s(T.STRING)}, required=["selector"])),
+
+    FD(name="browser_type", description="Type text into a form field (placeholder, label, or CSS selector).",
+       parameters=S(type=T.OBJECT, properties={
+           "selector": _s(T.STRING,"Field identifier"),
+           "text":     _s(T.STRING,"Text to type"),
+       }, required=["selector","text"])),
+
+    FD(name="browser_get_text", description="Get all visible text from the current page (max 6000 chars).",
+       parameters=S(type=T.OBJECT, properties={})),
+
+    FD(name="browser_screenshot", description="Take a full-page screenshot and save as PNG.",
+       parameters=S(type=T.OBJECT, properties={"path": _s(T.STRING,"Output file path")}, required=["path"])),
+
+    FD(name="browser_get_links", description="Return up to 40 links from the current page.",
+       parameters=S(type=T.OBJECT, properties={})),
+
+    FD(name="browser_scroll", description="Scroll the page: up, down, top, or bottom.",
+       parameters=S(type=T.OBJECT, properties={
+           "direction": S(type=T.STRING, enum=["up","down","top","bottom"]),
+       }, required=["direction"])),
+
+    FD(name="browser_press_key", description="Press a keyboard key: Enter, Tab, Escape, ArrowDown, etc.",
+       parameters=S(type=T.OBJECT, properties={"key": _s(T.STRING)}, required=["key"])),
+
+    FD(name="browser_select_option", description="Select an option from a dropdown.",
+       parameters=S(type=T.OBJECT, properties={
+           "selector": _s(T.STRING), "value": _s(T.STRING),
+       }, required=["selector","value"])),
+
+    FD(name="browser_wait", description="Wait N seconds (max 30).",
+       parameters=S(type=T.OBJECT, properties={"seconds": _s(T.NUMBER)}, required=["seconds"])),
+
+    FD(name="browser_current_url", description="Return the current URL and page title.",
+       parameters=S(type=T.OBJECT, properties={})),
+
+    FD(name="browser_go_back", description="Go back to the previous page.",
+       parameters=S(type=T.OBJECT, properties={})),
+
+    FD(name="browser_eval_js", description="Execute JavaScript on the page and return the result.",
+       parameters=S(type=T.OBJECT, properties={"script": _s(T.STRING)}, required=["script"])),
+
+    # ── WEB ──────────────────────────────────────────────────────────────
+    FD(name="read_webpage", description="Fast HTTP text fetch without a browser (max 8000 chars).",
+       parameters=S(type=T.OBJECT, properties={"url": _s(T.STRING)}, required=["url"])),
+
+    # ── EXCEL ─────────────────────────────────────────────────────────────
+    FD(name="create_excel",
+       description="Create a new Excel .xlsx file with sheets, headers, data rows, and auto-formatting.",
+       parameters=S(type=T.OBJECT,
+           properties={
+               "path": _s(T.STRING, "Full path to the .xlsx file"),
+               "sheets_data": S(type=T.ARRAY,
+                   description="List of sheets to create",
+                   items=S(type=T.OBJECT,
+                       properties={
+                           "name":    _s(T.STRING, "Sheet name"),
+                           "headers": S(type=T.ARRAY, description="Column headers",
+                                        items=_s(T.STRING)),
+                           "rows":    S(type=T.ARRAY, description="Data rows (list of lists)",
+                                        items=S(type=T.ARRAY, items=_s(T.STRING))),
+                           "col_widths": S(type=T.ARRAY, description="Optional column widths",
+                                           items=_s(T.NUMBER)),
+                       },
+                   ),
+               ),
+           },
+           required=["path","sheets_data"],
+       )),
+
+    FD(name="read_excel", description="Read an Excel file contents (max 100 rows per sheet).",
+       parameters=S(type=T.OBJECT, properties={"path": _s(T.STRING)}, required=["path"])),
+
+    FD(name="edit_excel_cell", description="Edit a single cell value in an Excel file.",
+       parameters=S(type=T.OBJECT, properties={
+           "path":       _s(T.STRING),
+           "sheet_name": _s(T.STRING),
+           "cell":       _s(T.STRING, "Cell address e.g. A1"),
+           "value":      _s(T.STRING, "New value"),
+       }, required=["path","sheet_name","cell","value"])),
+
+    FD(name="add_excel_formula",
+       description="Insert an Excel formula: =SUM(), =VLOOKUP(), =COUNTIF(), =IF(), =AVERAGE(), =MAX(), =MIN().",
+       parameters=S(type=T.OBJECT, properties={
+           "path":       _s(T.STRING),
+           "sheet_name": _s(T.STRING),
+           "cell":       _s(T.STRING, "Target cell e.g. B12"),
+           "formula":    _s(T.STRING, "Excel formula e.g. =SUM(B2:B11)"),
+       }, required=["path","sheet_name","cell","formula"])),
+
+    FD(name="add_excel_chart",
+       description="Add a bar, line, or pie chart to an Excel sheet.",
+       parameters=S(type=T.OBJECT, properties={
+           "path":       _s(T.STRING),
+           "sheet_name": _s(T.STRING),
+           "chart_type": S(type=T.STRING, enum=["bar","line","pie"]),
+           "data_range": _s(T.STRING, "Data range e.g. A1:B10"),
+           "title":      _s(T.STRING),
+           "position":   _s(T.STRING, "Anchor cell e.g. D2"),
+       }, required=["path","sheet_name","chart_type","data_range","title","position"])),
+
+    FD(name="add_excel_sheet", description="Add a new sheet to an existing Excel file.",
+       parameters=S(type=T.OBJECT, properties={
+           "path":       _s(T.STRING),
+           "sheet_name": _s(T.STRING),
+       }, required=["path","sheet_name"])),
+
+    FD(name="excel_add_rows", description="Append rows to the end of an Excel sheet.",
+       parameters=S(type=T.OBJECT,
+           properties={
+               "path":       _s(T.STRING),
+               "sheet_name": _s(T.STRING),
+               "rows": S(type=T.ARRAY,
+                   description="Rows to append; each row is a list of cell values",
+                   items=S(type=T.ARRAY, items=_s(T.STRING)),
+               ),
+           },
+           required=["path","sheet_name","rows"],
+       )),
+
+    FD(name="excel_style_range", description="Style a cell range: bold, background color, font size.",
+       parameters=S(type=T.OBJECT, properties={
+           "path":       _s(T.STRING),
+           "sheet_name": _s(T.STRING),
+           "cell_range": _s(T.STRING, "Range e.g. A1:D1"),
+           "bold":       _s(T.BOOLEAN, "Make text bold"),
+           "bg_color":   _s(T.STRING,  "Hex fill color without # e.g. FF0000"),
+           "font_size":  _s(T.INTEGER, "Font size in pt"),
+       }, required=["path","sheet_name","cell_range"])),
+
+    # ── SYSTEM ───────────────────────────────────────────────────────────
+    FD(name="run_command", description="Run a CMD / PowerShell command and return the output.",
+       parameters=S(type=T.OBJECT, properties={"command": _s(T.STRING)}, required=["command"])),
 ]
 
-# ── create_excel — manually declared (nested list-of-objects) ──
-_sheet_schema = S(
-    type=types.Type.OBJECT,
-    properties={
-        "name": S(type=types.Type.STRING, description="Sheet name"),
-        "headers": S(
-            type=types.Type.ARRAY,
-            description="Column header names",
-            items=S(type=types.Type.STRING),
-        ),
-        "rows": S(
-            type=types.Type.ARRAY,
-            description="Data rows; each row is a list of cell values",
-            items=S(
-                type=types.Type.ARRAY,
-                items=S(type=types.Type.STRING),
-            ),
-        ),
-        "col_widths": S(
-            type=types.Type.ARRAY,
-            description="Optional column widths",
-            items=S(type=types.Type.NUMBER),
-        ),
-    },
-)
-
-_create_excel_decl = types.FunctionDeclaration(
-    name="create_excel",
-    description=(
-        "Create a new Excel .xlsx file with data, headers, and auto-formatting. "
-        "Use this to create spreadsheets from scratch."
-    ),
-    parameters=S(
-        type=types.Type.OBJECT,
-        properties={
-            "path": S(type=types.Type.STRING, description="Full path to the .xlsx file"),
-            "sheets_data": S(
-                type=types.Type.ARRAY,
-                description="List of sheets to create",
-                items=_sheet_schema,
-            ),
-        },
-        required=["path", "sheets_data"],
-    ),
-)
-
-# ── excel_add_rows — manually declared (list-of-lists) ──
-_excel_add_rows_decl = types.FunctionDeclaration(
-    name="excel_add_rows",
-    description="Append rows to the end of an Excel sheet.",
-    parameters=S(
-        type=types.Type.OBJECT,
-        properties={
-            "path":       S(type=types.Type.STRING, description="Path to the .xlsx file"),
-            "sheet_name": S(type=types.Type.STRING, description="Name of the sheet"),
-            "rows": S(
-                type=types.Type.ARRAY,
-                description="Rows to append; each row is a list of cell values",
-                items=S(
-                    type=types.Type.ARRAY,
-                    items=S(type=types.Type.STRING),
-                ),
-            ),
-        },
-        required=["path", "sheet_name", "rows"],
-    ),
-)
-
-# ── Final tool list passed to Gemini ──
-GEMINI_TOOLS = types.Tool(function_declarations=[
-    # Auto-schema tools — wrap each function in FunctionDeclaration via Tool
-    *[f for f in SIMPLE_TOOLS],   # SDK accepts callables directly alongside declarations
-    _create_excel_decl,
-    _excel_add_rows_decl,
-])
+GEMINI_TOOLS = types.Tool(function_declarations=TOOL_DECLARATIONS)
 
 
 # ─────────────────────────────────────────
@@ -753,34 +699,25 @@ GEMINI_TOOLS = types.Tool(function_declarations=[
 SYSTEM_PROMPT = f"""You are an advanced AI assistant with full access to a Windows 11 computer.
 
 AVAILABLE TOOLS (ALWAYS USE THEM when the task requires it):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📁 FILES: read_file, write_file, list_files, open_file, delete_file, copy_file, move_file, create_directory
 🌐 BROWSER: browser_goto, browser_click, browser_type, browser_get_text, browser_screenshot, browser_get_links, browser_scroll, browser_press_key, browser_wait, browser_current_url, browser_go_back, browser_eval_js
-🔗 WEB: read_webpage (fast HTTP fetch without a browser)
+🔗 WEB: read_webpage
 📊 EXCEL: create_excel, read_excel, edit_excel_cell, add_excel_formula, add_excel_chart, add_excel_sheet, excel_add_rows, excel_style_range
 ⚙️ SYSTEM: run_command
 
 CRITICAL RULES:
-1. ALWAYS use tools — never say "I can't" or "that function is unavailable".
-2. Execute multi-step tasks autonomously without asking for confirmation at every step.
-3. Briefly state what you are doing at each step.
-4. Use full Windows paths with backslashes or the desktop path: {DESKTOP}
-5. If something fails, try an alternative approach — don't give up.
-6. For Google search: browser_goto("google.com") → browser_type("q", "query") → browser_press_key("Enter").
-7. For Wikipedia: browser_goto("wikipedia.org") → search → browser_get_text().
-8. Do NOT ask the user for data you can find yourself using tools.
-
-TOOL REMINDERS:
-- create_excel      → creates an Excel file with all data in one call.
-- add_excel_formula → adds formulas to an existing file.
-- add_excel_chart   → adds charts to an existing file.
-- write_file        → creates any text, HTML, or report file.
+1. ALWAYS use tools — never say "I can't" or "unavailable".
+2. Execute multi-step tasks autonomously.
+3. Use full Windows paths: {DESKTOP}
+4. If something fails, try an alternative approach.
+5. Google: browser_goto("google.com") → browser_type("q","query") → browser_press_key("Enter")
+6. Do NOT ask the user for data you can find with tools.
 
 User desktop: {DESKTOP}"""
 
 
 # ─────────────────────────────────────────
-# CONVERSATION HISTORY
+# CONVERSATION HISTORY + API LOOP
 # ─────────────────────────────────────────
 MAX_TURNS = 50
 history: list[types.Content] = []
@@ -792,13 +729,8 @@ def trim_history():
         history = history[-(MAX_TURNS * 2):]
 
 
-# ─────────────────────────────────────────
-# MAIN API CALL
-# ─────────────────────────────────────────
 def call_gemini(user_text: str, retries: int = 3) -> str:
-    """Send a message and run the tool-use loop until the model replies with text."""
     global history
-
     model = choose_model(user_text)
     history.append(types.Content(role="user", parts=[types.Part(text=user_text)]))
     trim_history()
@@ -812,23 +744,13 @@ def call_gemini(user_text: str, retries: int = 3) -> str:
 
     for attempt in range(retries):
         try:
-            print(f"  [🤖 {model} | tools: ✅]", end="", flush=True)
-
-            MAX_ITERATIONS = 25
-            iteration      = 0
-
-            while iteration < MAX_ITERATIONS:
-                iteration += 1
-
-                response      = client.models.generate_content(
-                    model    = model,
-                    contents = history,
-                    config   = config,
-                )
-                print(" ✓")
-
+            print(f"  [🤖 {model}]", end="", flush=True)
+            MAX_ITER = 25
+            for _ in range(MAX_ITER):
+                response      = client.models.generate_content(model=model, contents=history, config=config)
                 model_content = response.candidates[0].content
                 history.append(model_content)
+                print(" ✓")
 
                 tool_parts = [p for p in model_content.parts if p.function_call]
                 text_parts = [p for p in model_content.parts if p.text]
@@ -836,40 +758,33 @@ def call_gemini(user_text: str, retries: int = 3) -> str:
                 if not tool_parts:
                     return " ".join(p.text for p in text_parts if p.text).strip()
 
-                # Execute tools and feed results back
+                # Execute tools
                 result_parts = []
                 for part in tool_parts:
                     fc   = part.function_call
                     args = dict(fc.args) if fc.args else {}
                     result_parts.append(types.Part(
                         function_response=types.FunctionResponse(
-                            name    = fc.name,
-                            response= {"result": handle_tool_call(fc.name, args)},
+                            name=fc.name,
+                            response={"result": handle_tool_call(fc.name, args)},
                         )
                     ))
-
                 history.append(types.Content(role="user", parts=result_parts))
-                print(f"  [🤖 {model} | tools: ✅]", end="", flush=True)
+                print(f"  [🤖 {model}]", end="", flush=True)
 
             return "⚠️ Reached iteration limit."
 
         except Exception as e:
-            error_str = str(e).lower()
+            err = str(e).lower()
             print(f"\n  [⚠️  Attempt {attempt+1}/{retries}: {str(e)[:120]}]")
-
-            if "quota" in error_str or "429" in error_str or "resource_exhausted" in error_str:
+            if "quota" in err or "429" in err or "resource_exhausted" in err:
                 if model == MODEL_SMART:
-                    print(f"  [↩️  Switching to {MODEL_FAST}]")
-                    model = MODEL_FAST; continue
-                wait_time = min(2 ** attempt * 5, 60)
-                print(f"  [⏳ Waiting {wait_time}s...]")
-                time.sleep(wait_time); continue
-
-            if "not found" in error_str or "unavailable" in error_str:
+                    print(f"  [↩️  Switching to {MODEL_FAST}]"); model = MODEL_FAST; continue
+                wait = min(2**attempt * 5, 60)
+                print(f"  [⏳ Waiting {wait}s...]"); time.sleep(wait); continue
+            if "not found" in err or "unavailable" in err:
                 if model == MODEL_SMART:
-                    print(f"  [↩️  Falling back to {MODEL_FAST}]")
-                    model = MODEL_FAST; continue
-
+                    print(f"  [↩️  Falling back to {MODEL_FAST}]"); model = MODEL_FAST; continue
             if attempt < retries - 1:
                 time.sleep(3); continue
             raise
@@ -887,18 +802,10 @@ print(f"║  Fast  : {MODEL_FAST:<42} ║")
 print("╚══════════════════════════════════════════════════════╝")
 print()
 print(f"  📁 Desktop    : {DESKTOP}")
-print(f"  🌐 Playwright : {'✅ OK' if PLAYWRIGHT_AVAILABLE else '❌ Missing  →  pip install playwright && playwright install chromium'}")
-print(f"  📊 Excel      : {'✅ OK' if EXCEL_AVAILABLE     else '❌ Missing  →  pip install openpyxl'}")
+print(f"  🌐 Playwright : {'✅ OK' if PLAYWRIGHT_AVAILABLE else '❌  →  pip install playwright && playwright install chromium'}")
+print(f"  📊 Excel      : {'✅ OK' if EXCEL_AVAILABLE     else '❌  →  pip install openpyxl'}")
 print()
-print("  Examples:")
-print("  ──────────────────────────────────────────────────────")
-print("  • Open google.com and search for the weather in London")
-print("  • Take a screenshot of bbc.com and save to the desktop")
-print("  • Create an Excel budget with charts")
-print("  • List all files on the desktop")
-print("  • Run command: ipconfig")
-print()
-print("  Commands: 'exit' = quit | 'reset' = clear history | 'status' = stats")
+print("  Commands: 'exit' | 'reset' | 'status'")
 print()
 
 # ─────────────────────────────────────────
@@ -908,32 +815,24 @@ while True:
     try:
         user_input = input("👤 You: ").strip()
     except (KeyboardInterrupt, EOFError):
-        print("\n\n👋 Goodbye!")
-        close_browser(); break
+        print("\n👋 Goodbye!"); close_browser(); break
 
-    if user_input.lower() in ("exit", "quit"):
-        print("👋 Goodbye!")
-        close_browser(); break
+    if user_input.lower() in ("exit","quit"):
+        print("👋 Goodbye!"); close_browser(); break
 
-    if user_input.lower() in ("reset", "clear"):
-        history = []
-        print("🔄 History cleared.\n"); continue
+    if user_input.lower() in ("reset","clear"):
+        history = []; print("🔄 History cleared.\n"); continue
 
-    if user_input.lower() in ("status", "stats"):
-        print(f"\n📊 Status:")
-        print(f"  Smart calls today  : {_smart_calls_today}/{_MAX_SMART_CALLS}")
-        print(f"  Turns in history   : {len(history) // 2}")
-        print(f"  Browser            : {'open (' + _page.url + ')' if _page else 'closed'}\n")
-        continue
+    if user_input.lower() in ("status","stats"):
+        print(f"\n📊 Smart calls: {_smart_calls_today}/{_MAX_SMART_CALLS} | "
+              f"History: {len(history)//2} turns | "
+              f"Browser: {'open' if _page else 'closed'}\n"); continue
 
-    if not user_input:
-        continue
+    if not user_input: continue
 
     try:
         reply = call_gemini(user_input)
-        if reply:
-            print(f"\n🤖 Agent: {reply}\n")
+        if reply: print(f"\n🤖 Agent: {reply}\n")
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
-        if history and history[-1].role == "user":
-            history.pop()
+        if history and history[-1].role == "user": history.pop()
